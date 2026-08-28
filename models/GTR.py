@@ -113,7 +113,7 @@ class Model(nn.Module):
 
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            # Éú³Écycle_index
+            # ç”Ÿæˆcycle_index
             cycle_index = torch.randint(0, self.cycle_len, (x_enc.size(0),), device=x_enc.device)
             dec_out = self.forecast(x_enc, cycle_index)
         elif self.task_name == 'imputation':
