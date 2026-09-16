@@ -79,6 +79,11 @@ class ReleasedModel(nn.Module):
 class Model(nn.Module):
     def __init__(self, configs):
         super().__init__(); self.model=ReleasedModel(configs)
-    def forward(self, x, cycle=None, future_x=None):
-        c = cycle if cycle is not None else x.new_zeros(x.size(0), dtype=torch.long)
-        return self.model(x, c, None)[..., -1]
+    def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
+        del x_dec, x_mark_dec, mask
+        cycle = (
+            x_mark_enc
+            if x_mark_enc is not None
+            else x_enc.new_zeros(x_enc.size(0), dtype=torch.long)
+        )
+        return self.model(x_enc, cycle, None)[..., -1:]

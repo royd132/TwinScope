@@ -1,4 +1,4 @@
-"""Time-frequency PV forecasting with CMA and multi-scale CorPatch fusion."""
+"""PV forecasting model: time-frequency backbone + semantic residual guidance."""
 
 from __future__ import annotations
 
@@ -8,35 +8,15 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from layers.semantic_alignment import AdaptiveMultiHeadCMAResidual
-
-
-class RevIN(nn.Module):
-    """Reversible instance normalization over historical time."""
-
-    def __init__(self, channels: int, eps: float = 1e-5) -> None:
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(1, 1, channels))
-        self.bias = nn.Parameter(torch.zeros(1, 1, channels))
-
-    def normalize(
-        self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        mean = x.mean(dim=1, keepdim=True).detach()
-        std = torch.sqrt(x.var(dim=1, keepdim=True, unbiased=False) + self.eps).detach()
-        return (x - mean) / std * self.weight + self.bias, mean, std
-
-    def denormalize_target(
-        self, prediction: torch.Tensor, mean: torch.Tensor, std: torch.Tensor
-    ) -> torch.Tensor:
-        weight = self.weight[..., -1:].clamp_min(self.eps)
-        restored = (prediction.unsqueeze(-1) - self.bias[..., -1:]) / weight
-        return (restored * std[..., -1:] + mean[..., -1:]).squeeze(-1)
+from layers.corpatch import ForecastHead, MultiScaleCorPatchEncoder, MultiScaleVariablePatch
+from layers.pc_fra import PcFraResidualAdapter, pack_slices, pack_width
+from layers.physical_semantic import PhysicalSemanticEncoder
+from layers.residual_corrector import SemanticResidualCalibration
+from layers.revin import RevIN
 
 
 class SourceGTR(nn.Module):
-    """Cycle retrieval and local/global fusion from the source GTR block."""
+    """Cycle retrieval followed by local/global temporal fusion."""
 
     def __init__(
         self,
@@ -50,16 +30,12 @@ class SourceGTR(nn.Module):
         self.seq_len = seq_len
         self.channels = channels
         self.cycle_len = cycle_len
-        self.period_len = max(2, min(int(period_len), seq_len))
+        period_len = max(2, min(int(period_len), seq_len))
         self.cycle_query = nn.Parameter(torch.zeros(cycle_len, channels))
         self.mapping = nn.Linear(seq_len, seq_len)
-        kernel = 1 + 2 * (self.period_len // 2)
+        kernel = 1 + 2 * (period_len // 2)
         self.local_global_fusion = nn.Conv2d(
-            1,
-            1,
-            kernel_size=(2, kernel),
-            padding=(0, self.period_len // 2),
-            bias=False,
+            1, 1, kernel_size=(2, kernel), padding=(0, period_len // 2), bias=False
         )
         self.dropout = nn.Dropout(dropout)
 
@@ -80,7 +56,7 @@ class SourceGTR(nn.Module):
 
 
 class LDrive(nn.Module):
-    """Local derivative-context dynamics with a gated GRU residual."""
+    """Derivative-context dynamics with a gated GRU residual."""
 
     def __init__(self, channels: int, dropout: float = 0.1) -> None:
         super().__init__()
@@ -103,23 +79,17 @@ class TemporalBranchGate(nn.Module):
         super().__init__()
         hidden = max(16, 2 * channels)
         self.router = nn.Sequential(
-            nn.Linear(2 * channels, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, 2),
+            nn.Linear(2 * channels, hidden), nn.GELU(), nn.Linear(hidden, 2)
         )
 
-    def forward(
-        self, gtr: torch.Tensor, ldrive: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, gtr: torch.Tensor, ldrive: torch.Tensor) -> torch.Tensor:
         summary = torch.cat([gtr.mean(1), ldrive.mean(1)], dim=-1)
         weights = torch.softmax(self.router(summary), dim=-1)
-        fused = weights[:, 0, None, None] * gtr
-        fused = fused + weights[:, 1, None, None] * ldrive
-        return fused, weights
+        return weights[:, 0, None, None] * gtr + weights[:, 1, None, None] * ldrive
 
 
 class ChebyKANLinear(nn.Module):
-    """Chebyshev-polynomial KAN mapping."""
+    """Chebyshev-polynomial KAN mapping used by the spectral branch."""
 
     def __init__(self, input_dim: int, output_dim: int, degree: int = 3) -> None:
         super().__init__()
@@ -137,7 +107,7 @@ class ChebyKANLinear(nn.Module):
 
 
 class SpectralMKAN(nn.Module):
-    """rFFT → complex MKAN → irFFT frequency residual."""
+    """rFFT -> complex MKAN -> irFFT frequency residual."""
 
     def __init__(self, channels: int, d_model: int, seq_len: int) -> None:
         super().__init__()
@@ -154,12 +124,11 @@ class SpectralMKAN(nn.Module):
         gate = self.frequency_gate(state).unsqueeze(1)
         real = self.back(self.real_mkan(spectrum.real) * gate)
         imag = self.back(self.imag_mkan(spectrum.imag) * gate)
-        corrected = torch.complex(real, imag)
-        return torch.fft.irfft(corrected, n=self.seq_len, dim=1)
+        return torch.fft.irfft(torch.complex(real, imag), n=self.seq_len, dim=1)
 
 
 class PhysicalStateEncoder(nn.Module):
-    """Encode historical physical state without future covariates."""
+    """Encode the historical physical state used by routing modules."""
 
     def __init__(
         self,
@@ -174,9 +143,7 @@ class PhysicalStateEncoder(nn.Module):
         )
         self.encoder = nn.GRU(len(indices), d_model, batch_first=True)
         self.summary = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, d_model),
-            nn.GELU(),
+            nn.LayerNorm(d_model), nn.Linear(d_model, d_model), nn.GELU()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -185,7 +152,7 @@ class PhysicalStateEncoder(nn.Module):
 
 
 class TimeFrequencyRouter(nn.Module):
-    """Route temporal and spectral residuals from physical state."""
+    """Route temporal and spectral residuals from the physical state."""
 
     def __init__(self, d_model: int) -> None:
         super().__init__()
@@ -201,127 +168,15 @@ class TimeFrequencyRouter(nn.Module):
         return torch.sigmoid(self.router(state) + self.prior_logits)
 
 
-class MultiScaleVariablePatch(nn.Module):
-    """Patch each variable independently at physical time scales."""
-
-    def __init__(
-        self, seq_len: int, d_model: int, patch_lengths: Iterable[int]
-    ) -> None:
-        super().__init__()
-        self.patch_lengths = list(
-            dict.fromkeys(max(1, min(seq_len, int(p))) for p in patch_lengths)
-        )
-        self.strides = [max(1, patch // 2) for patch in self.patch_lengths]
-        self.embeddings = nn.ModuleList(
-            nn.Linear(patch, d_model) for patch in self.patch_lengths
-        )
-        self.positions = nn.ParameterList()
-        for patch, stride in zip(self.patch_lengths, self.strides, strict=True):
-            count = 1 + (seq_len - patch) // stride
-            self.positions.append(nn.Parameter(torch.zeros(1, 1, count, d_model)))
-        self.scales = list(zip(self.patch_lengths, self.strides, strict=True))
-
-    def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
-        source = x.transpose(1, 2)
-        outputs = []
-        for patch, stride, embedding, position in zip(
-            self.patch_lengths,
-            self.strides,
-            self.embeddings,
-            self.positions,
-            strict=True,
-        ):
-            windows = source.unfold(-1, patch, stride)
-            outputs.append(embedding(windows) + position)
-        return outputs
-
-
-class TemporalPatchMixer(nn.Module):
-    """Linear-complexity temporal mixing for one patch scale."""
-
-    def __init__(self, d_model: int, dropout: float = 0.1) -> None:
-        super().__init__()
-        self.token_norm = nn.LayerNorm(d_model)
-        self.depthwise = nn.Conv1d(
-            d_model, d_model, kernel_size=3, padding=1, groups=d_model
-        )
-        self.pointwise = nn.Conv1d(d_model, d_model, kernel_size=1)
-        self.token_dropout = nn.Dropout(dropout)
-        self.channel_norm = nn.LayerNorm(d_model)
-        self.channel_mlp = nn.Sequential(
-            nn.Linear(d_model, 2 * d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(2 * d_model, d_model),
-            nn.Dropout(dropout),
-        )
-
-    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
-        mixed = self.token_norm(tokens).transpose(1, 2)
-        mixed = self.pointwise(F.gelu(self.depthwise(mixed))).transpose(1, 2)
-        tokens = tokens + self.token_dropout(mixed)
-        return tokens + self.channel_mlp(self.channel_norm(tokens))
-
-
-class MultiScaleCorPatchEncoder(nn.Module):
-    """Mix time and variables per scale, then route scale summaries."""
-
-    def __init__(
-        self,
-        d_model: int,
-        scales: int,
-        heads: int = 4,
-        dropout: float = 0.1,
-    ) -> None:
-        super().__init__()
-        if d_model % heads != 0:
-            raise ValueError("d_model must be divisible by CorPatch attention heads")
-        self.temporal_mixers = nn.ModuleList(
-            TemporalPatchMixer(d_model, dropout) for _ in range(scales)
-        )
-        self.variable_attentions = nn.ModuleList(
-            nn.MultiheadAttention(d_model, heads, dropout=dropout, batch_first=True)
-            for _ in range(scales)
-        )
-        self.state_router = nn.Sequential(
-            nn.LayerNorm(d_model), nn.Linear(d_model, scales)
-        )
-        self.variable_scale_router = nn.Linear(d_model, 1)
-        self.output_norm = nn.LayerNorm(d_model)
-
-    def forward(
-        self, patches: list[torch.Tensor], state: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        summaries = []
-        for tokens, temporal_mixer, variable_attention in zip(
-            patches,
-            self.temporal_mixers,
-            self.variable_attentions,
-            strict=True,
-        ):
-            batch, variables, patch_count, width = tokens.shape
-            temporal = temporal_mixer(
-                tokens.reshape(batch * variables, patch_count, width)
-            ).reshape(batch, variables, patch_count, width)
-            variable_tokens = temporal.mean(dim=2)
-            related, _ = variable_attention(
-                variable_tokens,
-                variable_tokens,
-                variable_tokens,
-                need_weights=False,
-            )
-            summaries.append(variable_tokens + related)
-
-        scale_summaries = torch.stack(summaries, dim=2)
-        logits = self.state_router(state).unsqueeze(1)
-        logits = logits + self.variable_scale_router(scale_summaries).squeeze(-1)
-        weights = torch.softmax(logits, dim=-1)
-        fused = (scale_summaries * weights.unsqueeze(-1)).sum(dim=2)
-        return self.output_norm(fused), weights
-
-
 class Model(nn.Module):
-    """RevIN → time/frequency fusion → CMA → multi-scale CorPatch → head."""
+    """TSLib-compatible forecasting model."""
+
+    source_forecast_interface = True
+    # Marks the optional keyword channel used to feed precomputed frozen
+    # foundation-model window embeddings. The engine only passes
+    # ``fm_context`` when an embedding cache is attached; the formal forward
+    # never sees it.
+    accepts_fm_context = True
 
     def __init__(self, configs) -> None:
         super().__init__()
@@ -330,17 +185,24 @@ class Model(nn.Module):
         self.seq_len = int(configs.seq_len)
         self.pred_len = int(configs.pred_len)
         self.enc_in = int(configs.enc_in)
-        self.channels = self.enc_in
         self.d_model = int(configs.d_model)
         self.cycle_len = int(getattr(configs, "cycle", 96))
-        self.revin_mode = str(getattr(configs, "revin_mode", "full"))
-        if self.revin_mode not in {"full", "center", "global"}:
-            raise ValueError(f"Unsupported RevIN mode: {self.revin_mode}")
 
         dropout = float(getattr(configs, "dropout", 0.1))
-        self.source_forecast_interface = True
+        corpatch_heads = int(getattr(configs, "corpatch_heads", 4))
+        semantic_heads = int(getattr(configs, "semantic_heads", corpatch_heads))
+        physical_cfg = getattr(configs, "physical_semantic", None)
+        if physical_cfg is None:
+            raise ValueError("PSRC requires physical_semantic training statistics")
+        prompt_dim = int(physical_cfg.get("d_token", 32))
+        # Pre-registered component-ablation switches. Empty/absent by
+        # construction, so the formal (non-ablation) forward path is
+        # numerically unchanged; every submodule is still built so checkpoint
+        # parameter names stay identical across variants.
+        self.ablation = frozenset(getattr(configs, "ablation", ()) or ())
+
         self.revin = RevIN(self.enc_in)
-        self.physical_state = PhysicalStateEncoder(
+        self.state_encoder = PhysicalStateEncoder(
             self.enc_in,
             self.d_model,
             getattr(configs, "physics_indices", None),
@@ -357,17 +219,6 @@ class Model(nn.Module):
         self.spectral = SpectralMKAN(self.enc_in, self.d_model, self.seq_len)
         self.tf_router = TimeFrequencyRouter(self.d_model)
 
-        self.prompt_dim = int(getattr(configs, "semantic_prompt_dim", 768))
-        self.semantic_adapter = AdaptiveMultiHeadCMAResidual(
-            seq_len=self.seq_len,
-            d_model=self.d_model,
-            prompt_dim=self.prompt_dim,
-            num_heads=int(getattr(configs, "cma_heads", 4)),
-            dropout=float(getattr(configs, "cma_dropout", dropout)),
-        )
-        self.semantic_enabled = True
-        self.semantic_strength = 1.0
-
         sample_hours = float(getattr(configs, "sample_hours", 0.25))
         patch_hours = tuple(getattr(configs, "patch_hours", (1.0, 2.0, 4.0, 8.0)))
         patch_lengths = [
@@ -378,119 +229,93 @@ class Model(nn.Module):
         self.corpatch = MultiScaleCorPatchEncoder(
             self.d_model,
             len(self.patch.patch_lengths),
-            heads=int(getattr(configs, "corpatch_heads", 4)),
+            heads=corpatch_heads,
             dropout=dropout,
         )
-        self.head = nn.Sequential(
-            nn.LayerNorm(2 * self.d_model),
-            nn.Linear(2 * self.d_model, self.d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(self.d_model, self.pred_len),
+        self.forecast_head = ForecastHead(self.d_model, self.pred_len, dropout)
+
+        self.physical_semantic_encoder = PhysicalSemanticEncoder(
+            roles=physical_cfg["roles"],
+            feature_mu=physical_cfg["feature_mu"],
+            feature_sd=physical_cfg["feature_sd"],
+            target_mu=physical_cfg["target_mu"],
+            target_sd=physical_cfg["target_sd"],
+            token_mean=physical_cfg["token_mean"],
+            token_scale=physical_cfg["token_scale"],
+            d_token=prompt_dim,
+            dropout=dropout,
+        )
+        self.residual_calibration = SemanticResidualCalibration(
+            self.d_model,
+            prompt_dim,
+            self.pred_len,
+            heads=semantic_heads,
+            max_correction=float(
+                getattr(configs, "semantic_residual_max_correction", 0.5)
+            ),
+            max_gate=float(getattr(configs, "semantic_residual_max_gate", 1.0)),
+            use_gate=bool(physical_cfg.get("use_gate", True)),
+            dropout=dropout,
         )
 
-        self.last_tf_weights: torch.Tensor | None = None
-        self.last_temporal_weights: torch.Tensor | None = None
-        self.last_scale_weights: torch.Tensor | None = None
-        self.last_semantic_gate: torch.Tensor | None = None
-        self.last_semantic_head_weights: torch.Tensor | None = None
-        self.last_semantic_strength: torch.Tensor | None = None
-        self.route_tf_weights: torch.Tensor | None = None
-        self.route_scale_weights: torch.Tensor | None = None
-
-    def _cycle_from_mark(
-        self, mark: torch.Tensor | None, batch: int, device: torch.device
-    ) -> torch.Tensor:
-        if mark is None:
-            return torch.zeros(batch, device=device, dtype=torch.long)
-        cycle = mark if torch.is_tensor(mark) else torch.as_tensor(mark)
-        if cycle.ndim == 1:
-            selected = cycle
-        elif cycle.ndim == 2:
-            selected = cycle[:, 0]
-        else:
-            selected = cycle[:, 0, -1]
-        return selected.to(device=device).long().reshape(batch) % self.cycle_len
-
-    def _prompt_from_mark(self, mark: torch.Tensor | None) -> torch.Tensor | None:
-        if not torch.is_tensor(mark) or mark.ndim != 3:
-            return None
-        if mark.shape[1:] == (self.enc_in, self.prompt_dim):
-            return mark
-        if mark.shape[1:] == (self.prompt_dim, self.enc_in):
-            return mark.transpose(1, 2)
-        return None
-
-    def _normalize_history(
-        self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-        if self.revin_mode == "full":
-            return self.revin.normalize(x)
-        if self.revin_mode == "center":
-            mean = x.mean(dim=1, keepdim=True).detach()
-            return x - mean, mean, None
-        return x, None, None
-
-    def _forecast_core(
-        self,
-        x_enc: torch.Tensor,
-        x_mark_enc: torch.Tensor | None,
-        x_mark_dec: torch.Tensor | None,
-    ) -> torch.Tensor:
-        x, mean, std = self._normalize_history(x_enc)
-        state = self.physical_state(x_enc)
-        cycle = self._cycle_from_mark(x_mark_enc, x_enc.size(0), x_enc.device)
-
-        gtr_feature = self.gtr(x, cycle)
-        ldrive_feature = self.ldrive(x)
-        temporal_feature, temporal_weights = self.temporal_gate(
-            gtr_feature, ldrive_feature
-        )
-        temporal_residual = temporal_feature - x
-        spectral_residual = self.spectral(x, state)
-        tf_weights = self.tf_router(state)
-        fused = x + tf_weights[:, 0, None, None] * temporal_residual
-        fused = fused + tf_weights[:, 1, None, None] * spectral_residual
-
-        prompt = self._prompt_from_mark(x_mark_dec)
-        semantic_gate = None
-        semantic_strength = None
-        semantic_weights = None
-        if (
-            prompt is not None
-            and self.semantic_enabled
-            and float(self.semantic_strength) != 0.0
-        ):
-            residual, semantic_gate, semantic_strength, semantic_weights = (
-                self.semantic_adapter(fused, prompt, state)
+        pc_fra_cfg = getattr(configs, "pc_fra", None)
+        # PC-FRA H16: window-level H-dim residual adapter placed strictly
+        # after frozen PSRC. Arm B is the PARA-style trunk; arm C adds
+        # FiLM conditioning from the six physical tokens. Two shuffle
+        # variants select permuted content for negative diagnostics.
+        if pc_fra_cfg is not None:
+            variant = str(pc_fra_cfg.get("variant", "pcfra"))
+            if variant not in {"para", "pcfra", "phys_shuffle", "prior_shuffle"}:
+                raise ValueError(f"unknown pc_fra variant {variant!r}")
+            self.pc_fra_variant = variant
+            self.pc_fra_adapter = PcFraResidualAdapter(
+                horizon=int(pc_fra_cfg["horizon"]),
+                hidden=int(pc_fra_cfg.get("hidden", 96)),
+                dropout=float(pc_fra_cfg.get("dropout", 0.1)),
+                use_film=variant != "para",
+                token_dim=prompt_dim,
+                film_bound=float(pc_fra_cfg.get("film_bound", 0.1)),
+                epsilon=float(pc_fra_cfg["epsilon"]),
             )
-            fused = fused + float(self.semantic_strength) * residual
+            self.register_buffer(
+                "pc_fra_level_mu",
+                torch.tensor(float(pc_fra_cfg["level_mu"]), dtype=torch.float32),
+                persistent=False,
+            )
+            self.register_buffer(
+                "pc_fra_level_sd",
+                torch.tensor(float(pc_fra_cfg["level_sd"]), dtype=torch.float32),
+                persistent=False,
+            )
+            self.register_buffer(
+                "pc_fra_sigma_mu",
+                torch.tensor(float(pc_fra_cfg["sigma_mu"]), dtype=torch.float32),
+                persistent=False,
+            )
+            self.register_buffer(
+                "pc_fra_sigma_sd",
+                torch.tensor(float(pc_fra_cfg["sigma_sd"]), dtype=torch.float32),
+                persistent=False,
+            )
+        else:
+            self.pc_fra_adapter = None
+            self.pc_fra_variant = None
+        # (y_psrc standardized, Delta standardized) for the PC-FRA arm.
+        self.last_pc_fra = None
 
-        variables, scale_weights = self.corpatch(self.patch(fused), state)
-        target_token = variables[:, -1]
-        global_token = variables.mean(dim=1)
-        prediction = self.head(torch.cat([target_token, global_token], dim=-1))
-
-        self.last_tf_weights = tf_weights.detach()
-        self.last_temporal_weights = temporal_weights.detach()
-        self.last_scale_weights = scale_weights.detach()
-        self.last_semantic_gate = (
-            semantic_gate.detach() if semantic_gate is not None else None
-        )
-        self.last_semantic_head_weights = (
-            semantic_weights.detach() if semantic_weights is not None else None
-        )
-        self.last_semantic_strength = (
-            semantic_strength.detach() if semantic_strength is not None else None
-        )
-        self.route_tf_weights = tf_weights
-        self.route_scale_weights = scale_weights.mean(dim=1)
-
-        if self.revin_mode == "full":
-            return self.revin.denormalize_target(prediction, mean, std)
-        if self.revin_mode == "center":
-            return prediction + mean[..., -1]
-        return prediction
+    def _cycle_index(
+        self, x_mark_enc: torch.Tensor | None, batch: int, device: torch.device
+    ) -> torch.Tensor:
+        if x_mark_enc is None:
+            return torch.zeros(batch, dtype=torch.long, device=device)
+        mark = x_mark_enc if torch.is_tensor(x_mark_enc) else torch.as_tensor(x_mark_enc)
+        if mark.ndim == 1:
+            cycle = mark
+        elif mark.ndim == 2:
+            cycle = mark[:, 0]
+        else:
+            cycle = mark[:, 0, -1]
+        return cycle.to(device=device).long().reshape(batch) % self.cycle_len
 
     def forecast(
         self,
@@ -498,33 +323,176 @@ class Model(nn.Module):
         x_mark_enc: torch.Tensor | None,
         x_dec: torch.Tensor | None,
         x_mark_dec: torch.Tensor | None,
+        fm_context: torch.Tensor | None = None,
+        pc_partner: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        del x_dec
-        return self._forecast_core(x_enc, x_mark_enc, x_mark_dec).unsqueeze(-1)
+        del x_dec, x_mark_dec
+        ab = self.ablation
+        x, mean, std = self.revin.normalize(x_enc)
+        state = self.state_encoder(x_enc)
+        cycle = self._cycle_index(x_mark_enc, x.size(0), x.device)
+        # Compute the physics-aware semantic tokens at the same position as
+        # the formal model (before the backbone branches) so dropout RNG
+        # order - and therefore the full/structural-arm results - reproduces
+        # the locked run exactly. The two purely numerical calibration arms
+        # skip this encoder by construction.
+        needs_semantic = not (
+            "numerical_backbone" in ab or "numeric_residual" in ab
+        )
+        semantic_state = (
+            self.physical_semantic_encoder(x_enc) if needs_semantic else None
+        )
 
-    def forecast_multi(
-        self,
-        x_enc: torch.Tensor,
-        x_mark_enc: torch.Tensor | None,
-        x_dec: torch.Tensor | None,
-        x_mark_dec: torch.Tensor | None,
-    ) -> torch.Tensor:
-        return self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+        # --- Group A: numerical time-frequency backbone -------------------
+        gtr = self.gtr(x, cycle)
+        ldrive = self.ldrive(x)
+        if "no_ldrive" in ab:
+            temporal = gtr
+        elif "no_gtr" in ab:
+            temporal = ldrive
+        elif "equal_gl_fusion" in ab:
+            temporal = 0.5 * gtr + 0.5 * ldrive
+        else:
+            temporal = self.temporal_gate(gtr, ldrive)
+
+        if "no_spectral" in ab:
+            # Temporal-only: bypass both the spectral branch and the TF router
+            # (no zero vector is routed, avoiding an incidental rescaling).
+            fused = temporal
+        else:
+            temporal_residual = temporal - x
+            spectral_residual = self.spectral(x, state)
+            if "equal_tf_fusion" in ab:
+                fused = x + 0.5 * temporal_residual + 0.5 * spectral_residual
+            else:
+                tf_weights = self.tf_router(state)
+                fused = (
+                    x
+                    + tf_weights[:, 0, None, None] * temporal_residual
+                    + tf_weights[:, 1, None, None] * spectral_residual
+                )
+
+        scale_features = self.corpatch.encode_scales(self.patch(fused))
+        variables, _ = self.corpatch.fuse_scales(scale_features, state)
+
+        base_prediction = self.forecast_head(variables)
+
+        # --- Group B: physics-aware semantic residual calibration ---------
+        if "numerical_backbone" in ab:
+            # B1: numerical backbone only; output the base forecast unchanged.
+            prediction = base_prediction
+            gate = torch.zeros_like(base_prediction)
+        else:
+            if "numeric_residual" in ab:
+                # B2: keep the residual head/gate/supervision but remove all
+                # physics-semantic conditioning (self-attend numeric queries).
+                prediction, _, gate = self.residual_calibration(
+                    variables,
+                    state,
+                    base_prediction,
+                    None,
+                    numeric_only=True,
+                )
+            else:
+                prediction, _, gate = self.residual_calibration(
+                    variables,
+                    state,
+                    base_prediction,
+                    semantic_state,
+                )
+        self.last_psrc_gate = gate.detach()
+        base_out = self.revin.denormalize_target(base_prediction, mean, std)
+        psrc_out = self.revin.denormalize_target(prediction, mean, std)
+        corrected_out = psrc_out
+        self.last_pc_fra = None
+        # --- PC-FRA residual adapter (registered H16 protocol) ----------
+        # Strictly after frozen PSRC; y = y_psrc + epsilon*tanh(MLP(u)).
+        # The pack carries physical-unit C_bar/L/sigma, the standardized
+        # partner disagreement (negative diagnostic), and the registered
+        # operating-state / intra-day one-hots. The adapter never feeds
+        # GTR/LDrive/SpectralMKAN/patching/CorPatch/PSRC attention.
+        if self.pc_fra_adapter is not None and "numerical_backbone" not in ab:
+            if fm_context is None:
+                raise ValueError(
+                    "pc_fra is enabled but no precomputed pc_fra feature "
+                    "pack was passed to the forward pass"
+                )
+            pack = fm_context.to(
+                device=base_prediction.device, dtype=base_prediction.dtype
+            )
+            if pack.shape[-1] != pack_width(self.pred_len):
+                raise ValueError(
+                    "pc_fra pack width "
+                    f"{pack.shape[-1]} != {pack_width(self.pred_len)}"
+                )
+            sl = pack_slices(self.pred_len)
+            target_mu = float(self.physical_semantic_encoder.target_mu)
+            target_sd = float(self.physical_semantic_encoder.target_sd)
+            variant = self.pc_fra_variant
+            if variant == "prior_shuffle":
+                cbar_phys = pack[:, sl["c_bar_partner"]]
+                disagreement = pack[:, sl["d_partner"]]
+            else:
+                cbar_phys = pack[:, sl["c_bar"]]
+            cbar_std = (cbar_phys - target_mu) / target_sd
+            if variant != "prior_shuffle":
+                disagreement = cbar_std - psrc_out
+            latest_std = (
+                pack[:, sl["latest"] : sl["latest"] + 1] - target_mu
+            ) / target_sd
+            sigma_z = (
+                pack[:, sl["sigma"] : sl["sigma"] + 1] - self.pc_fra_sigma_mu
+            ) / self.pc_fra_sigma_sd.clamp_min(1e-8)
+            level_z = (
+                pack[:, sl["level"] : sl["level"] + 1] - self.pc_fra_level_mu
+            ) / self.pc_fra_level_sd.clamp_min(1e-8)
+            epv = torch.cat(
+                [pack[:, sl["state"]], level_z, pack[:, sl["bucket"]]], dim=-1
+            )
+            pc_tokens = semantic_state
+            if variant == "phys_shuffle":
+                if pc_partner is None:
+                    raise ValueError(
+                        "phys_shuffle variant requires partner history"
+                    )
+                # Frozen encoder over the partner window: breaks physical
+                # alignment while preserving the token marginals.
+                pc_tokens = self.physical_semantic_encoder(
+                    pc_partner.to(device=x_enc.device, dtype=x_enc.dtype)
+                )
+            pc_delta = self.pc_fra_adapter(
+                psrc_out,
+                cbar_std,
+                disagreement,
+                latest_std,
+                epv,
+                sigma_z,
+                pc_tokens if variant != "para" else None,
+            )
+            corrected_out = psrc_out + pc_delta
+            self.last_pc_fra = (psrc_out.detach(), pc_delta)
+        self.last_semantic_decomposition = (base_out, psrc_out - base_out)
+
+        return corrected_out.unsqueeze(-1)
 
     def forward(
         self,
         x_enc: torch.Tensor,
-        x_mark_enc: torch.Tensor | None,
-        x_dec: torch.Tensor | None,
-        x_mark_dec: torch.Tensor | None,
+        x_mark_enc: torch.Tensor | None = None,
+        x_dec: torch.Tensor | None = None,
+        x_mark_dec: torch.Tensor | None = None,
         mask=None,
+        fm_context: torch.Tensor | None = None,
+        pc_partner: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
         del mask
         if self.task_name not in {"long_term_forecast", "short_term_forecast"}:
             return None
-        output = (
-            self.forecast_multi(x_enc, x_mark_enc, x_dec, x_mark_dec)
-            if self.features == "M"
-            else self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
-        )
-        return output[:, -self.pred_len :, :]
+        return self.forecast(
+            x_enc,
+            x_mark_enc,
+            x_dec,
+            x_mark_dec,
+            fm_context=fm_context,
+            pc_partner=pc_partner,
+        )[:, -self.pred_len :]

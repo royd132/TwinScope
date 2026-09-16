@@ -115,6 +115,10 @@ class Model(DLinear):
     def __init__(self, configs):
         super().__init__(configs.seq_len, configs.pred_len)
 
-    def forward(self, x, cycle=None, future_x=None):
-        return super().forward(torch.cat([x[..., -1:], x[..., :-1]], dim=-1))
+    def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
+        del x_mark_enc, x_dec, x_mark_dec, mask
+        out = super().forward(
+            torch.cat([x_enc[..., -1:], x_enc[..., :-1]], dim=-1)
+        )
+        return out.unsqueeze(-1)
 

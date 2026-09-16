@@ -1,27 +1,75 @@
-# 时频 L-Drive 光伏预测模型
+# PSRC + Frozen Chronos 正式对比实验
 
-日常运行只使用根目录下的 `run.py`。当前模型入口为 `models/ours.py`，
-薄入口仅负责选择站点和运行模式。
+仓库只保留统一训练入口、模型源码、正式数据、锁定参数和实验结果。
 
-```bash
-# 快速完整链路检查（1 epoch，不用于比较精度）
-python run.py --site site1b --mode smoke
+## 四站正式规格
 
-# 只评估验证集，用于选参
-python run.py --site site1b --mode validation
-python run.py --site site24 --mode validation
+- 数据：DKASC Site31、DKASC Site1A、PVOD Station02、HKUST
+- 分辨率：15 min
+- 任务：`L96 → H16`（过去 24 h 预测未来 4 h）
+- 划分：按时间顺序 70%/15%/15%，不打乱
+- 训练：最多 100 epoch，patience 10，seed 2026
+- 模型：PSRC、Frozen Chronos 残差校正（FM）与 16 个基线
+- 指标：RMSE、MAE、MBE、R²，使用各站原始目标量纲
+- 输出：`outputs/final_h16`
 
-# 锁定参数后评估测试集
-python run.py --site site1b --mode formal
+PSRC 沿用仅由训练/验证集确定的锁定参数；H16 不根据测试集重新选参。公开配置基线在 `public_baselines` 中单独记录，其余基线采用统一训练协议。
+
+## 运行
+
+```powershell
+python -m pip install -r requirements.txt
+python run_experiment.py --preset fm-h16 --dry-run
+python run_experiment.py --preset fm-h16 --resume
 ```
 
-固定协议为 15 分钟分辨率、L96→H48、时间顺序 70%/15%/15%、单种子 2026。
-默认结果写入 `results/ours_h48/<mode>/`，输出路径不得离开本工程目录。
+需要从头重建 Frozen Chronos 缓存、validation 锁定 adapter 并显式执行 test
+确认时，仍使用同一入口：
 
-PyCharm 中可直接运行 `Ours Site1B H48 - Validation` 或
-`Ours Site24 H48 - Validation`。
+```powershell
+python run_experiment.py --preset fm-h16 --resume --rebuild-fm
+```
 
-当前预测流程为：RevIN → GTR/L-Drive 时域分支与 Spectral MKAN 频域分支
-→ 物理状态时频路由 → 冻结 GPT 提示的多头 CMA 语义残差 → 1/2/4/8 小时
-多尺度 Patch → 每尺度 TemporalMixer 与 VariableAttention → 状态感知尺度路由
-→ 目标/全局 token 预测头 → inverse RevIN。
+`--rebuild-fm` 是唯一会重新执行 FM test confirmation 的开关；不指定时只读取
+已锁定的 `outputs/correction_tune_v1/test_confirmation_report.json`。
+
+已有完整训练产物时，仅重建并校验正式表：
+
+```powershell
+python run_experiment.py --preset fm-h16 --report-only
+```
+
+调试时可只补跑部分基础任务：
+
+```powershell
+python run_experiment.py --datasets dkasc_site31 pvod_station00 --models psrc timemixer --resume
+```
+
+入口会按数据 SHA256、配置指纹和产物完整性跳过已完成任务。`fm-h16`
+预设只接受锁定的 H16/seed 2026 四站矩阵，并校验 FM 报告中的 PSRC 数值与
+基础实验逐站对齐后生成：
+
+- `outputs/final_h16/formal_comparison_subset_with_fm.xlsx`
+- `outputs/final_h16/<任务名>/result.json`
+
+历史 H24 配置和结果保留不变。需要复现时显式运行：
+
+```powershell
+python run_experiment.py --config configs/formal_experiment_h24.json --output outputs/final --resume
+```
+
+## 源码边界
+
+- `models/ours.py`：PSRC 数值主干与统一模型接口
+- `layers/revin.py`：可复用 RevIN
+- `layers/corpatch.py`、`physical_semantic.py`、`residual_corrector.py`：独立功能层
+- `formal/`：数据、训练、指标、正式表生成与统一调度
+- `formal/fm_table.py`：只消费锁定 FM test 报告，不执行 test 选参
+- `configs/best_params.json`：已归档最佳参数
+
+验证：
+
+```powershell
+python -m pytest -q
+python -m compileall -q formal models layers utils run_experiment.py
+```

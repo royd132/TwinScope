@@ -5,9 +5,6 @@ from einops import rearrange, repeat
 from torch.func import vmap
 from layers.CrossUnet_EncDec import scale_block, Encoder, Decoder, DecoderLayer
 from layers.CrossUentattn import AttentionLayer, FullAttention, TwoStageAttentionLayer,PatchEmbedding
-import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
 from math import ceil
 from types import SimpleNamespace
 
@@ -131,11 +128,16 @@ class Model(nn.Module):
         values = vars(configs).copy()
         values.update(enc_in=13, seq_len=configs.pred_len, useweather=True)
         self.model = ReleasedModel(SimpleNamespace(**values))
-    def forward(self, x, cycle=None, future_x=None):
+    def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
+        del x_mark_enc, x_dec, x_mark_dec, mask
         p = self.model.pred_len
-        current = x[:, -p:, -7:]
-        previous = x[:, -2*p:-p, -7:] if x.size(1) >= 2*p else current
+        current = x_enc[:, -p:, -7:]
+        previous = (
+            x_enc[:, -2*p:-p, -7:] if x_enc.size(1) >= 2*p else current
+        )
         history_nwp = current[..., :6]
-        future = future_x[..., :6] if future_x is not None else history_nwp
-        marks = x.new_zeros(x.size(0), p, 4)
-        return self.model(current, marks, future, marks, history_nwp, previous)[..., -1]
+        marks = x_enc.new_zeros(x_enc.size(0), p, 4)
+        prediction = self.model(
+            current, marks, history_nwp, marks, history_nwp, previous
+        )[..., -1]
+        return prediction.unsqueeze(-1)

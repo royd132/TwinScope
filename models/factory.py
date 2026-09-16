@@ -4,19 +4,24 @@ from importlib import import_module
 from types import SimpleNamespace
 
 _MODULES = {
-    "ampdnet": "ampdnet",
+    "psrc": "ours",
     "timemixer": "timemixer",
+    "ampdnet": "ampdnet",
+    "crossunet": "crossunet",
     "timesnet": "timesnet",
     "patchtst": "patchtst",
     "itransformer": "itransformer",
     "dlinear": "dlinear",
     "cyclenet": "cyclenet",
     "patchmlp": "patchmlp",
+    "tcn": "tcn",
+    "frets": "frets",
+    "lstm": "lstm",
+    "gru": "gru",
+    "timexer": "timexer",
     "persistence": "persistence",
     "seasonal_naive": "seasonal_naive",
     "smart_persistence": "smart_persistence",
-    "crossunet": "crossunet",
-    "ours": "ours",
 }
 
 _DEFAULTS = {
@@ -67,3 +72,8 @@ def build_model(name, configs):
     return import_module(f".{_MODULES[key]}", __package__).Model(
         SimpleNamespace(**values)
     )
+
+
+def registered_models():
+    """Return formal model names in stable report order."""
+    return tuple(_MODULES)

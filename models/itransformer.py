@@ -285,6 +285,8 @@ class Model(nn.Module):
                                   configs.enc_in, 5, 0.01, False, 4, 256,
                                   F.gelu, 2)
 
-    def forward(self, x, cycle=None, future_x=None):
-        return self.model(torch.cat([x[..., -1:], x[..., :-1]], dim=-1))
+    def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
+        del x_mark_enc, x_dec, x_mark_dec, mask
+        out = self.model(torch.cat([x_enc[..., -1:], x_enc[..., :-1]], dim=-1))
+        return out.unsqueeze(-1)
 

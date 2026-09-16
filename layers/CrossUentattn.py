@@ -1,13 +1,10 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.utils import weight_norm
-from utils.masking import TriangularCausalMask, ProbMask
+from utils.masking import TriangularCausalMask
 import math
 from math import sqrt
-from einops import rearrange, repeat
+from einops import rearrange
 import numpy as np
-from torch.func import vmap
 
 
 class PositionalEmbedding(nn.Module):

@@ -1,0 +1,129 @@
+{
+ "output_dir": "outputs/final_h16",
+ "datasets": [
+  {
+   "name": "dkasc_site31",
+   "path": "data/DKASC_site31_15min.csv"
+  },
+  {
+   "name": "dkasc_site9a",
+   "path": "data/DKASC_site9a_15min.csv"
+  },
+  {
+   "name": "dkasc_site1a",
+   "path": "data/DKASC_site1a_15min.csv"
+  },
+  {
+   "name": "dkasc_site19",
+   "path": "data/DKASC_site19_15min.csv"
+  },
+  {
+   "name": "pvod_station00",
+   "path": "data/PVOD_station00_15min.csv"
+  },
+  {
+   "name": "pvod_station01",
+   "path": "data/PVOD_station01_15min.csv"
+  },
+  {
+   "name": "pvod_station02",
+   "path": "data/PVOD_station02_15min.csv"
+  },
+  {
+   "name": "pvod_station03",
+   "path": "data/PVOD_station03_15min.csv"
+  },
+  {
+   "name": "hkust",
+   "path": "data/HKUST_UG_Hall4_15min_causal_physics.csv"
+  }
+ ],
+ "models": [
+  "psrc",
+  "timemixer",
+  "ampdnet",
+  "crossunet",
+  "timesnet",
+  "patchtst",
+  "itransformer",
+  "dlinear",
+  "cyclenet",
+  "patchmlp",
+  "tcn",
+  "frets",
+  "lstm",
+  "gru",
+  "timexer",
+  "persistence",
+  "seasonal_naive",
+  "smart_persistence"
+ ],
+ "seq_len": 96,
+ "horizons": [
+  16
+ ],
+ "seeds": [
+  2026
+ ],
+ "epochs": 100,
+ "patience": 10,
+ "train_fraction": 0.7,
+ "validation_end_fraction": 0.85,
+ "output_projection": "nonnegative",
+ "train_windows_per_epoch": 6000,
+ "psrc": {
+  "gate": true
+ },
+ "baseline": {
+  "d_model": 64,
+  "batch": 128,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "optimizer": "adam",
+  "scheduler": "none",
+  "loss_base": "mse"
+ },
+ "public_baselines": {
+  "patchtst": {
+   "patchtst_d_model": 128,
+   "patchtst_d_ff": 256,
+   "patchtst_heads": 16,
+   "patchtst_layers": 3,
+   "patchtst_dropout": 0.2,
+   "patchtst_patch_len": 16,
+   "patchtst_stride": 8
+  },
+  "tcn": {
+   "tcn_channels": 128,
+   "tcn_layers": 3,
+   "tcn_kernel_size": 3,
+   "tcn_dropout": 0.1,
+   "weight_decay": 0.0
+  },
+  "frets": {
+   "frets_embed_size": 128,
+   "frets_hidden_size": 256,
+   "weight_decay": 0.0
+  },
+  "lstm": {
+   "lstm_d_model": 128,
+   "lstm_layers": 1,
+   "weight_decay": 0.0
+  },
+  "gru": {
+   "gru_d_model": 128,
+   "gru_layers": 1,
+   "weight_decay": 0.0
+  },
+  "timexer": {
+   "timexer_d_model": 256,
+   "timexer_heads": 4,
+   "timexer_layers": 3,
+   "timexer_patch_len": 6,
+   "timexer_dropout": 0.1,
+   "timexer_use_norm": false,
+   "weight_decay": 0.0
+  }
+ },
+ "best_parameters": "configs/best_params.json"
+}

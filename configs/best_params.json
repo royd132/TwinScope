@@ -1,0 +1,272 @@
+{
+ "dkasc_site31": {
+  "source": "Optuna + validation-only manual refinement",
+  "params": {
+   "patch_hours": [
+    1.0,
+    2.0,
+    4.0,
+    8.0
+   ],
+   "d_model": 96,
+   "gtr_period": 12,
+   "dropout": 0.1,
+   "heads": 4,
+   "lr": 0.0018,
+   "weight_decay": 1.4123445236912103e-07,
+   "batch": 64,
+   "optimizer": "adam",
+   "scheduler": "cosine",
+   "loss_base": "mse",
+   "huber_delta": 1.5,
+   "sampling_policy": "epoch_uniform",
+   "daylight_weight": 0.25,
+   "ramp_weight": 0.1,
+   "max_gate": 0.5,
+   "max_correction": 0.25,
+   "semantic_loss_weight": 0.2,
+   "residual_alpha": 1.0,
+   "base_anchor_weight": 1.0
+  }
+ },
+ "dkasc_site9a": {
+  "source": "Optuna rolling validation",
+  "params": {
+   "patch_hours": [
+    2.0,
+    4.0,
+    8.0,
+    12.0
+   ],
+   "d_model": 128,
+   "gtr_period": 24,
+   "dropout": 0.1,
+   "heads": 8,
+   "lr": 0.0014245097393370864,
+   "weight_decay": 1.4123445236912103e-07,
+   "batch": 64,
+   "optimizer": "adam",
+   "scheduler": "cosine",
+   "loss_base": "huber",
+   "huber_delta": 1.0,
+   "sampling_policy": "epoch_uniform",
+   "daylight_weight": 0.25,
+   "ramp_weight": 0.05,
+   "max_gate": 0.75,
+   "max_correction": 0.25,
+   "semantic_loss_weight": 0.1,
+   "residual_alpha": 5.0,
+   "base_anchor_weight": 2.0
+  }
+ },
+ "pvod_station00": {
+  "source": "validation-only frozen-grid lr fix 20260913 (architecture frozen; audit: pvod00_lr_fix_20260913/selection.json)",
+  "params": {
+   "patch_hours": [
+    2.0,
+    4.0,
+    8.0,
+    12.0
+   ],
+   "d_model": 128,
+   "gtr_period": 24,
+   "dropout": 0.1,
+   "heads": 8,
+   "lr": 0.00026568971024749336,
+   "weight_decay": 3.136177597232876e-07,
+   "batch": 64,
+   "optimizer": "adamw",
+   "scheduler": "cosine",
+   "loss_base": "mse",
+   "huber_delta": 1.0,
+   "sampling_policy": "epoch_uniform",
+   "daylight_weight": 0.25,
+   "ramp_weight": 0.0,
+   "max_gate": 0.5,
+   "max_correction": 0.25,
+   "semantic_loss_weight": 0.2,
+   "residual_alpha": 1.0,
+   "base_anchor_weight": 1.0
+  }
+ },
+ "pvod_station01": {
+  "source": "H24 Optuna rolling recalibration trial 3",
+  "params": {
+   "patch_hours": [
+    0.5,
+    1.0,
+    2.0,
+    4.0
+   ],
+   "d_model": 64,
+   "gtr_period": 24,
+   "dropout": 0.2,
+   "heads": 8,
+   "lr": 0.00022482277637125047,
+   "weight_decay": 0.0001413389443544566,
+   "batch": 128,
+   "optimizer": "adam",
+   "scheduler": "cosine",
+   "loss_base": "huber",
+   "huber_delta": 1.0,
+   "sampling_policy": "epoch_uniform",
+   "daylight_weight": 0.25,
+   "ramp_weight": 0.05,
+   "max_gate": 0.75,
+   "max_correction": 0.25,
+   "semantic_loss_weight": 0.1,
+   "residual_alpha": 5.0,
+   "base_anchor_weight": 2.0
+  }
+ },
+ "pvod_station02": {
+  "source": "PVOD upstream Location station07 (36.64403N 113.64187E; data/S-3.csv -> data/PVOD_station02_15min.csv via preprocess_pvod_sites.py). Initial seven-station H16 run 20260914 used a frozen transfer from pvod_station00. ADOPTED 2026-09-14 after validation-only two-stage tuning (outputs/psrc_tune_h16_newpvod_20260914; confirm trial 3): validation RMSE 1.4704 vs incumbent control 1.4922 (+1.458% relative, above the 0.5% bar); single locked test unblinding 1.6755 vs old formal 1.7002 (-1.45%, MAE 0.8855 vs 0.9250) corroborates the validation gain. Architecture untouched; only optimizer/capacity/loss hyperparameters changed (adam, batch 128, heads 4, dropout 0.05, lr/weight_decay re-tuned, ramp_weight 0.05, max_gate 1.0, semantic_loss_weight 0.3, residual_alpha 5.0, base_anchor_weight 2.0). User approved adoption for the formal rerun on 2026-09-14; the displaced result.json is archived in the job directory as result.predump_backup.json",
+  "params": {
+   "patch_hours": [
+    2.0,
+    4.0,
+    8.0,
+    12.0
+   ],
+   "d_model": 128,
+   "gtr_period": 24,
+   "dropout": 0.05,
+   "heads": 4,
+   "lr": 0.00020673974312715364,
+   "weight_decay": 5.549710386029115e-08,
+   "batch": 128,
+   "optimizer": "adam",
+   "scheduler": "cosine",
+   "loss_base": "mse",
+   "huber_delta": 1.0,
+   "sampling_policy": "epoch_uniform",
+   "daylight_weight": 0.25,
+   "ramp_weight": 0.05,
+   "max_gate": 1.0,
+   "max_correction": 0.25,
+   "semantic_loss_weight": 0.3,
+   "residual_alpha": 5.0,
+   "base_anchor_weight": 2.0
+  }
+ },
+ "pvod_station03": {
+  "source": "PVOD upstream Location station08 (36.70761N 113.89999E; data/S-4.csv -> data/PVOD_station03_15min.csv via preprocess_pvod_sites.py). Frozen architecture transfer from pvod_station00 for the seven-station H16 run 20260914; no station03-specific validation tuning was performed",
+  "params": {
+   "patch_hours": [
+    2.0,
+    4.0,
+    8.0,
+    12.0
+   ],
+   "d_model": 128,
+   "gtr_period": 24,
+   "dropout": 0.1,
+   "heads": 8,
+   "lr": 0.00026568971024749336,
+   "weight_decay": 3.136177597232876e-07,
+   "batch": 64,
+   "optimizer": "adamw",
+   "scheduler": "cosine",
+   "loss_base": "mse",
+   "huber_delta": 1.0,
+   "sampling_policy": "epoch_uniform",
+   "daylight_weight": 0.25,
+   "ramp_weight": 0.0,
+   "max_gate": 0.5,
+   "max_correction": 0.25,
+   "semantic_loss_weight": 0.2,
+   "residual_alpha": 1.0,
+   "base_anchor_weight": 1.0
+  }
+ },
+ "hkust": {
+  "source": "Frozen architecture transfer from dkasc_site31 for the five-station H16 single-seed rerun 20260913; no hkust-specific validation tuning was performed",
+  "params": {
+   "patch_hours": [
+    1.0,
+    2.0,
+    4.0,
+    8.0
+   ],
+   "d_model": 96,
+   "gtr_period": 12,
+   "dropout": 0.1,
+   "heads": 4,
+   "lr": 0.0018,
+   "weight_decay": 1.4123445236912103e-07,
+   "batch": 64,
+   "optimizer": "adam",
+   "scheduler": "cosine",
+   "loss_base": "mse",
+   "huber_delta": 1.5,
+   "sampling_policy": "epoch_uniform",
+   "daylight_weight": 0.25,
+   "ramp_weight": 0.1,
+   "max_gate": 0.5,
+   "max_correction": 0.25,
+   "semantic_loss_weight": 0.2,
+   "residual_alpha": 1.0,
+   "base_anchor_weight": 1.0
+  }
+ },
+ "dkasc_site1a": {
+  "source": "DKASC Alice Springs Site 1A (Trina 10.5 kW mono-Si dual-axis tracker, post-2013-08 two-tracker config; data/91-Site_DKA-M9_B-Phase.csv -> data/DKASC_site1a_15min.csv via preprocess_dkasc_new_sites.py; identity verified via dkasolarcentre.com.au). Frozen architecture transfer from dkasc_site31 for the nine-station H16 run 20260914; no site1a-specific validation tuning yet (validation-only retune campaign outputs/psrc_tune_h16_newdkasc_20260914).",
+  "params": {
+   "patch_hours": [
+    1.0,
+    2.0,
+    4.0,
+    8.0
+   ],
+   "d_model": 96,
+   "gtr_period": 12,
+   "dropout": 0.1,
+   "heads": 4,
+   "lr": 0.0018,
+   "weight_decay": 1.4123445236912103e-07,
+   "batch": 64,
+   "optimizer": "adam",
+   "scheduler": "cosine",
+   "loss_base": "mse",
+   "huber_delta": 1.5,
+   "sampling_policy": "epoch_uniform",
+   "daylight_weight": 0.25,
+   "ramp_weight": 0.1,
+   "max_gate": 0.5,
+   "max_correction": 0.25,
+   "semantic_loss_weight": 0.2,
+   "residual_alpha": 1.0,
+   "base_anchor_weight": 1.0
+  }
+ },
+ "dkasc_site19": {
+  "source": "DKASC Alice Springs Site 19 (Sungrid 5.0 kW mono-Si fixed, 2010; data/98-Site_DKA-M8_B-Phase.csv -> data/DKASC_site19_15min.csv via preprocess_dkasc_new_sites.py; identity verified via dkasolarcentre.com.au). Frozen architecture transfer from dkasc_site31 for the nine-station H16 run 20260914; no site19-specific validation tuning yet (validation-only retune campaign outputs/psrc_tune_h16_newdkasc_20260914).",
+  "params": {
+   "patch_hours": [
+    1.0,
+    2.0,
+    4.0,
+    8.0
+   ],
+   "d_model": 96,
+   "gtr_period": 12,
+   "dropout": 0.1,
+   "heads": 4,
+   "lr": 0.0018,
+   "weight_decay": 1.4123445236912103e-07,
+   "batch": 64,
+   "optimizer": "adam",
+   "scheduler": "cosine",
+   "loss_base": "mse",
+   "huber_delta": 1.5,
+   "sampling_policy": "epoch_uniform",
+   "daylight_weight": 0.25,
+   "ramp_weight": 0.1,
+   "max_gate": 0.5,
+   "max_correction": 0.25,
+   "semantic_loss_weight": 0.2,
+   "residual_alpha": 1.0,
+   "base_anchor_weight": 1.0
+  }
+ }
+}

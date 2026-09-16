@@ -229,5 +229,7 @@ class ReleasedModel(nn.Module):
 class Model(nn.Module):
     def __init__(self, configs):
         super().__init__(); self.model=ReleasedModel(configs)
-    def forward(self, x, cycle=None, future_x=None):
-        return self.model(x, x.new_zeros(x.size(0), x.size(1), 4), None)[..., -1]
+    def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
+        del x_mark_enc, x_dec, x_mark_dec, mask
+        marks = x_enc.new_zeros(x_enc.size(0), x_enc.size(1), 4)
+        return self.model(x_enc, marks, None)[..., -1:]

@@ -111,9 +111,17 @@ class Model(nn.Module):
     def __init__(self, configs):
         super().__init__()
         self.model = PatchTST(configs.seq_len, configs.enc_in, configs.pred_len,
-                              128, 0.01, 5, False, 4, 256, nn.functional.gelu,
-                              5, patch_len=4, stride=2)
+                              int(getattr(configs, "patchtst_d_model", 128)),
+                              float(getattr(configs, "patchtst_dropout", 0.2)),
+                              5, False,
+                              int(getattr(configs, "patchtst_heads", 16)),
+                              int(getattr(configs, "patchtst_d_ff", 256)), nn.functional.gelu,
+                              int(getattr(configs, "patchtst_layers", 3)),
+                              patch_len=int(getattr(configs, "patchtst_patch_len", 16)),
+                              stride=int(getattr(configs, "patchtst_stride", 8)))
 
-    def forward(self, x, cycle=None, future_x=None):
-        return self.model(torch.cat([x[..., -1:], x[..., :-1]], dim=-1))
+    def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
+        del x_mark_enc, x_dec, x_mark_dec, mask
+        out = self.model(torch.cat([x_enc[..., -1:], x_enc[..., :-1]], dim=-1))
+        return out.unsqueeze(-1)
 

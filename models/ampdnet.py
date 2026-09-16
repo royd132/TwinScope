@@ -1171,6 +1171,10 @@ class Model(nn.Module):
         self.model = ConvPVNet(configs.enc_in, configs.seq_len, configs.pred_len,
                                D=64, P=4, S=stride, num_layers=1)
 
-    def forward(self, x, cycle=None, future_x=None):
-        return self.model(torch.cat([x[..., -1:], x[..., :-1]], dim=-1))
+    def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
+        del x_mark_enc, x_dec, x_mark_dec, mask
+        prediction = self.model(
+            torch.cat([x_enc[..., -1:], x_enc[..., :-1]], dim=-1)
+        )
+        return prediction.unsqueeze(-1)
 

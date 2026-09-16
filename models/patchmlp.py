@@ -146,5 +146,6 @@ class Encoder(nn.Module):
 class Model(nn.Module):
     def __init__(self, configs):
         super().__init__(); self.model=ReleasedModel(configs)
-    def forward(self, x, cycle=None, future_x=None):
-        return self.model(x, None, None)[..., -1]
+    def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
+        del x_mark_enc, x_dec, x_mark_dec, mask
+        return self.model(x_enc, None, None)[..., -1:]
